@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BETERANO MAP</title>
+
+  <link rel="icon" href="/map/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.Default.css" />
+  <link rel="stylesheet" href="https://beteranomotors.github.io/chrome/components/splash/splash.css" />
+
+  <style>
+    /* El header-loader ajusta --header-offset; esto evita solapes iniciales */
+    html, body { height: 100%; overflow-x: hidden; }
+    body.header-loaded #root{
+      min-height: calc(100dvh - var(--header-offset, 0px));
+      height:     calc(100dvh - var(--header-offset, 0px));
+      overflow: hidden;
+    }
+
+    /* Contenedor del remoto (Tow) situado exactamente encima de la columna del mapa */
+    #btr-remote-host{
+      position: fixed;
+      z-index: 45;          /* por encima del mapa; header/dock quedan más alto */
+      display: none;        /* visible solo cuando hay remoto abierto */
+    }
+    #btr-remote-frame{
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: #0b0b0b;
+    }
+  </style>
+  <script type="module" crossorigin src="/map/assets/index-0ef15fee.js"></script>
+  <link rel="stylesheet" href="/map/assets/index-d22c12f0.css">
+</head>
+<body>
+  <!-- Header externo -->
+  <div id="header-container"></div>
+
+  <!-- React (lista + mapa en dos columnas) -->
+  <div id="root"></div>
+
+  <!-- Host de apps remotas (iframe) SOBRE la columna del mapa -->
+  <div id="btr-remote-host">
+    <iframe id="btr-remote-frame" referrerpolicy="no-referrer-when-downgrade"></iframe>
+  </div>
+
+  <!-- App React -->
+  
+
+  <!-- Splash -->
+  <script defer src="https://beteranomotors.github.io/chrome/components/splash/splash.js"></script>
+
+  <!-- Inyección del header -->
+  <script>
+    window.addEventListener('DOMContentLoaded', () => {
+      const lang = (document.documentElement.getAttribute('lang') || 'es').slice(0,2);
+
+      // Header
+      const h = document.createElement('script');
+      h.src = 'https://beteranomotors.github.io/chrome/components/header/header-loader.js?lang=' + encodeURIComponent(lang);
+      h.defer = true;
+      h.setAttribute('data-target', '#header-container');
+      document.body.appendChild(h);
+
+      // Dock (usa el host inline del header: #bm-dock-root)
+      const d = document.createElement('script');
+      d.src = 'https://beteranomotors.github.io/chrome/components/dock/dock-loader.js';
+      d.defer = true;
+      d.setAttribute('data-target', '#bm-dock-root');
+      d.setAttribute('data-variant', 'inline');
+      document.body.appendChild(d);
+    });
+  </script>
+
+  <!-- Shell-router: Tow en iframe + cambio de URL a /tow/ manteniendo header/dock/sidebar -->
+  <script>
+    (function(){
+      const REMOTE = {
+        tow: "https://beteranomotors.github.io/tow/",
+        map: "https://beteranomotors.github.io/map/"
+      };
+
+      const host  = document.getElementById("btr-remote-host");
+      const frame = document.getElementById("btr-remote-frame");
+      let resizeObs = null;
+
+      function rectOver(el, hostEl){
+        const r = el.getBoundingClientRect();
+        hostEl.style.top    = r.top + "px";
+        hostEl.style.left   = r.left + "px";
+        hostEl.style.width  = Math.max(0, r.width)  + "px";
+        hostEl.style.height = Math.max(0, r.height) + "px";
+      }
+
+      function placeOverMap(){
+        const mapCol = document.querySelector(".map-container");
+        if (!mapCol) return;
+        rectOver(mapCol, host);
+      }
+
+      function openRemote(url, pushState = true){
+        placeOverMap();
+        host.style.display = "block";
+        if (frame.src !== url) frame.src = url;
+
+        if (pushState) {
+          const u = new URL(url);
+          history.pushState({ btrApp: url }, "", u.pathname.endsWith("/") ? u.pathname : (u.pathname + "/"));
+        }
+
+        if (!resizeObs) {
+          resizeObs = new ResizeObserver(placeOverMap);
+          resizeObs.observe(document.body);
+          window.addEventListener("resize", placeOverMap);
+        }
+      }
+
+      function closeRemote(popState = true){
+        host.style.display = "none";
+        frame.removeAttribute("src");
+
+        if (resizeObs) {
+          try { resizeObs.disconnect(); } catch {}
+          resizeObs = null;
+          window.removeEventListener("resize", placeOverMap);
+        }
+        if (popState) {
+          const u = new URL(REMOTE.map);
+          history.pushState({ btrApp: REMOTE.map }, "", u.pathname.endsWith("/") ? u.pathname : (u.pathname + "/"));
+        }
+      }
+
+      // Intercepta clicks desde el dock
+      document.addEventListener("btr:dock", (ev) => {
+        const dest = ev?.detail?.action;
+        if (dest === "tow") {
+          openRemote(REMOTE.tow, true);
+          ev.stopPropagation(); // evita fallback a location.href
+        } else {
+          closeRemote(true);
+        }
+      });
+
+      // Eventos abiertos/cerrados (por si los emites en el futuro)
+      window.addEventListener("btr:openApp", (ev) => {
+        const name = ev?.detail?.name;
+        if (name === "tow") openRemote(REMOTE.tow, true);
+      });
+      window.addEventListener("btr:closeApp", (ev) => {
+        const name = ev?.detail?.name;
+        if (!name || name === "tow") closeRemote(true);
+      });
+
+      // Soporte Back/Forward del navegador
+      window.addEventListener("popstate", () => {
+        const path = location.pathname.replace(/\/+$/,'');
+        if (path.endsWith("/tow")) {
+          openRemote(REMOTE.tow, false);
+        } else {
+          closeRemote(false);
+        }
+      });
+
+      // Rehidratar si aterrizamos en /tow
+      if (location.pathname.replace(/\/+$/,'').endsWith("/tow")) {
+        openRemote(REMOTE.tow, false);
+      }
+    })();
+  </script>
+</body>
+</html>
